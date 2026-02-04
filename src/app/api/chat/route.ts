@@ -1,57 +1,75 @@
-// src/app/api/chat/route.ts
-
-// Wir importieren Hilfsmittel von Next.js, um HTTP-Anfragen (Requests) und Antworten (Responses) zu verarbeiten.
 import { NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
-// Diese Funktion wird automatisch aufgerufen, wenn jemand eine "POST"-Anfrage an /api/chat sendet.
-// "async" bedeutet: Diese Funktion muss zwischendurch warten (z.B. auf die KI), sie läuft nicht in einem Rutsch durch.
+// --- KONFIGURATION ---
+// Wir verbinden uns direkt hier mit der Datenbank.
+// (In großen Apps macht man das in einer extra Datei, aber für heute reicht es so!)
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
 export async function POST(req: Request) {
   try {
-    // 1. WAS HAT DER NUTZER GESAGT?
-    // Wir lesen den "Body" (Inhalt) der Anfrage, die vom Frontend kommt.
-    // Wir erwarten ein Objekt, das "messages" enthält.
+    // 1. INPUT: Was kommt vom Frontend?
     const { messages } = await req.json();
+    
+    // Wir holen uns die allerletzte Nachricht (das ist die, die der User gerade getippt hat)
+    const lastUserMessage = messages[messages.length - 1];
 
-    // Konsolenausgabe für dich zum Debuggen (erscheint in deinem Terminal, wo 'npm run dev' läuft)
-    console.log('Nachricht an KI senden:', messages);
+    // --- NEU: SPEICHERN (USER) ---
+    // Bevor wir die KI fragen, speichern wir die Frage des Users.
+    // Wir gehen davon aus, dass deine Tabelle 'chat_history' heißt und die Spalten 'sender' und 'content' hat.
+    const { error: saveErrorUser } = await supabase
+      .from('chat_history')
+      .insert([
+        { 
+          sender: 'user', 
+          content: lastUserMessage.content // oder .text, je nachdem was das Frontend schickt
+        }
+      ]);
 
-    // 2. WEITERLEITUNG AN OLLAMA
-    // Wir tun jetzt so, als wären wir ein Browser und rufen den Ollama-Server an.
-    // 'fetch' ist der Befehl, um Daten von einer URL zu holen oder zu senden.
+    if (saveErrorUser) console.error('Fehler beim Speichern (User):', saveErrorUser);
+
+
+    // 2. OLLAMA ANRUFEN (wie vorher)
     const ollamaResponse = await fetch('http://localhost:11434/api/chat', {
-      method: 'POST', // Wir wollen Daten SENDEN (nicht nur lesen)
-      headers: {
-        'Content-Type': 'application/json', // Wir sagen dem Server: "Hier kommen JSON-Daten"
-      },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'qwen2.5:7b', // WICHTIG: Das Modell muss exakt so heißen wie das, was du in Ollama geladen hast
-        messages: messages,  // Die Chat-Historie, die wir oben ausgepackt haben
-        stream: false,       // false = Wir warten auf die ganze Antwort (einfacher für den Anfang)
+        model: 'qwen2.5:7b',
+        messages: messages, // Wir schicken den ganzen Verlauf für den Kontext
+        stream: false,
       }),
     });
 
-    // 3. PRÜFEN: HAT OLLAMA GEANTWORTET?
-    // Wenn 'ok' nicht true ist, gab es einen Fehler (z.B. Modell nicht gefunden, Server aus).
     if (!ollamaResponse.ok) {
-      const errorText = await ollamaResponse.text();
-      console.error('Ollama Fehler:', errorText);
-      return NextResponse.json({ error: 'Fehler bei Ollama: ' + errorText }, { status: 500 });
+      return NextResponse.json({ error: 'Ollama antwortet nicht' }, { status: 500 });
     }
 
-    // 4. ANTWORT AUSPACKEN
-    // Ollama schickt uns ein JSON-Paket zurück. Das müssen wir erst "parsen" (lesen).
     const data = await ollamaResponse.json();
-    
-    // Die eigentliche Text-Antwort steckt tief im Objekt: data -> message -> content
-    const botReply = data.message?.content || "Keine Antwort erhalten.";
+    const botReply = data.message?.content || "Keine Antwort.";
 
-    // 5. ANTWORT AN DEIN FRONTEND ZURÜCKSCHICKEN
-    // Wir bauen ein Paket für dein ChatPanel und schicken es ab.
+
+    // --- NEU: SPEICHERN (BOT) ---
+    // Jetzt speichern wir, was die KI geantwortet hat.
+    const { error: saveErrorBot } = await supabase
+      .from('chat_history')
+      .insert([
+        { 
+          sender: 'bot', 
+          content: botReply 
+        }
+      ]);
+
+    if (saveErrorBot) console.error('Fehler beim Speichern (Bot):', saveErrorBot);
+
+
+    // 3. ANTWORT ZURÜCK ANS FRONTEND
     return NextResponse.json({ reply: botReply });
 
   } catch (error) {
-    // Falls irgendwas völlig schiefgeht (z.B. Netzwerk weg, Code abgestürzt)
-    console.error('Server Fehler:', error);
-    return NextResponse.json({ error: 'Interner Server-Fehler' }, { status: 500 });
+    console.error('API Error:', error);
+    return NextResponse.json({ error: 'Server Crash' }, { status: 500 });
   }
 }
