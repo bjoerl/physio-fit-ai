@@ -24,7 +24,7 @@ export async function POST(req: Request) {
       .from('chat_history')
       .insert([
         { 
-          sender: 'user', 
+          //sender: 'user', 
           content: lastUserMessage.content // oder .text, je nachdem was das Frontend schickt
         }
       ]);
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
       .from('chat_history')
       .insert([
         { 
-          sender: 'bot', 
+          // sender: 'bot', 
           content: botReply 
         }
       ]);
