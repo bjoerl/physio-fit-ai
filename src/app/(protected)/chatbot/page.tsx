@@ -1,3 +1,6 @@
+// src\app\(protected)\chatbot\page.tsx
+
+
 // Auch hier brauchen wir 'use client', da wir Client-Komponenten (ChatPanel & PainLogger) einbinden.
 'use client';
 
