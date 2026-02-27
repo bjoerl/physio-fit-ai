@@ -1,47 +1,50 @@
 // src/app/api/chat/route.ts
 import { NextResponse } from 'next/server';
-// WICHTIG: Wir nutzen den SERVER Client, weil wir uns im Backend befinden (API Route).
-// Der Server-Client kann die Cookies auslesen, um zu checken, wer gerade eingeloggt ist.
-import { createClient } from '@/lib/supabase/server'; 
+import { createClient } from '@supabase/supabase-js';
+
+// Wir nutzen hier direkt den Admin/Service-Key oder den normalen Setup-Client, 
+// um aus der Backend-Route heraus zu speichern.
+// (Voraussetzung: Du schickst die user_id vom Frontend mit!)
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 export async function POST(req: Request) {
   try {
-    // 1. INPUT VOM FRONTEND (Was hat der User getippt?)
-    const { messages } = await req.json();
-    const lastUserMessage = messages[messages.length - 1];
+    // 1. WAS KOMMT VOM FRONTEND?
+    // Wir erwarten jetzt neben den Nachrichten auch die user_id!
+    const { messages, userId } = await req.json();
 
-    // --- NEU: 2. USER HERAUSFINDEN ---
-    // Wir bauen die Verbindung zu Supabase auf.
-    const supabase = await createClient();
-    // Wir fragen Supabase: "Wer schickt gerade diesen Request?" (anhand der Cookies)
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    
-    // Sicherheits-Check: Wenn niemand eingeloggt ist, brechen wir sofort ab.
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Nicht eingeloggt' }, { status: 401 });
+    if (!userId) {
+      return NextResponse.json({ error: 'User ID fehlt' }, { status: 400 });
     }
 
-    // --- NEU: 3. USER-NACHRICHT SPEICHERN ---
-    // Jetzt schieben wir die Nachricht in die neue Tabelle 'chat_history'.
-    const { error: saveErrorUser } = await supabase
-      .from('chat_history')
-      .insert([{
-        user_id: user.id,          // <-- Hier verknüpfen wir die Nachricht mit dem echten User!
-        sender: 'user',            // Wer hat's geschrieben?
-        content: lastUserMessage.content // Der Text
-      }]);
+    // Wir holen uns die LETZTE Nachricht (das ist die, die der User gerade getippt hat)
+    const lastUserMessage = messages[messages.length - 1];
 
-    // Wenn Supabase meckert, schreiben wir es ins Terminal, damit wir es sehen.
-    if (saveErrorUser) console.error('Fehler beim Speichern (User):', saveErrorUser);
+    // --- 2. DATENBANK: USER-NACHRICHT SPEICHERN ---
+    const { error: dbErrorUser } = await supabase
+      .from('chat_messages')
+      .insert([
+        {
+          user_id: userId,
+          sender: 'user',
+          content: lastUserMessage.content,
+        }
+      ]);
 
-    // 4. KI ANFRAGEN (Ollama)
-    // Wir leiten die komplette Konversation an deinen lokalen KI-Container weiter.
+    if (dbErrorUser) {
+      console.error('Fehler beim Speichern der User-Nachricht:', dbErrorUser);
+    }
+
+    // --- 3. OLLAMA ANRUFEN ---
     const ollamaResponse = await fetch('http://localhost:11434/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'qwen2.5:7b',
-        messages: messages,
+        messages: messages, // Wir schicken den Verlauf an die KI
         stream: false,
       }),
     });
@@ -50,28 +53,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Ollama antwortet nicht' }, { status: 500 });
     }
 
-    // KI-Antwort auspacken
     const data = await ollamaResponse.json();
-    const botReply = data.message?.content || "Keine Antwort.";
+    const botReply = data.message?.content || "Keine Antwort erhalten.";
 
-    // --- NEU: 5. BOT-NACHRICHT SPEICHERN ---
-    // Wir speichern auch das, was die KI gesagt hat, wieder für DEN GLEICHEN User.
-    const { error: saveErrorBot } = await supabase
-      .from('chat_history')
-      .insert([{
-        user_id: user.id, // <-- Auch die Bot-Nachricht gehört in die Historie DIESES Users
-        sender: 'bot',
-        content: botReply
-      }]);
+    // --- 4. DATENBANK: BOT-NACHRICHT SPEICHERN ---
+    const { error: dbErrorBot } = await supabase
+      .from('chat_messages')
+      .insert([
+        {
+          user_id: userId,
+          sender: 'bot',
+          content: botReply,
+        }
+      ]);
 
-    if (saveErrorBot) console.error('Fehler beim Speichern (Bot):', saveErrorBot);
+    if (dbErrorBot) {
+      console.error('Fehler beim Speichern der Bot-Nachricht:', dbErrorBot);
+    }
 
-    // 6. ANTWORT ZURÜCK ANS FRONTEND
-    // Das ChatPanel empfängt das hier und rendert die neue Sprechblase.
+    // --- 5. ANTWORT ZURÜCK ANS FRONTEND ---
     return NextResponse.json({ reply: botReply });
 
   } catch (error) {
     console.error('API Error:', error);
-    return NextResponse.json({ error: 'Server Crash' }, { status: 500 });
+    return NextResponse.json({ error: 'Interner Server-Fehler' }, { status: 500 });
   }
 }
